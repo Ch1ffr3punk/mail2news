@@ -1,0 +1,9 @@
+{
+    "blocked_headers": [
+        "Approved",
+        "Cancel",
+        "Control",
+        "Supersedes",
+        "X-Cancel"
+    ]
+}
