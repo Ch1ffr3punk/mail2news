@@ -1,0 +1,1 @@
+"|/usr/bin/gpg --decrypt --batch --quiet --pinentry-mode loopback --passphrase your_passphrase | /home/mail2news/mail2news"

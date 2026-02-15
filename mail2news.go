@@ -2,12 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"golang.org/x/net/proxy"
@@ -17,7 +15,6 @@ const (
 	server         = "news.tcpreset.net:119"
 	torProxy       = "127.0.0.1:9050"
 	maxArticleSize = 64 * 1024 // 64 KB
-	pgpPassphrase  = "your_passphrase"
 	configFile     = "m2n.json"
 )
 
@@ -83,93 +80,23 @@ func processAndSendRawArticle(reader io.Reader) error {
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
-	data, err := io.ReadAll(reader)
+	// Jetzt kommt NUR der entschlüsselte Text von GPG
+	decrypted, err := io.ReadAll(reader)
 	if err != nil {
-		return fmt.Errorf("error reading input: %v", err)
+		return fmt.Errorf("error reading decrypted input: %v", err)
 	}
 
-	pgpMessage := extractPGPMessage(string(data))
-	if pgpMessage == "" {
-		return fmt.Errorf("no PGP message found in email body")
-	}
+	article := string(decrypted)
 
-	decrypted, err := decryptWithGPG(pgpMessage)
-	if err != nil {
-		return fmt.Errorf("PGP decryption failed: %v", err)
-	}
-
-	if err := checkBlockedHeaders(decrypted, config); err != nil {
+	if err := checkBlockedHeaders(article, config); err != nil {
 		return err
 	}
 
-	if len(decrypted) > maxArticleSize {
+	if len(article) > maxArticleSize {
 		return fmt.Errorf("article size exceeds %d KB", maxArticleSize/1024)
 	}
 
-	// Debug
-	// fmt.Fprintf(os.Stderr, "--- DECRYPTED NEWS ARTICLE ---\n%s\n--- END ---\n", decrypted)
-
-	return sendRawArticle(decrypted)
-}
-
-func extractPGPMessage(email string) string {
-	lines := strings.Split(email, "\n")
-	inPGP := false
-	var pgp []string
-	
-	for _, line := range lines {
-		if strings.Contains(line, "-----BEGIN PGP MESSAGE-----") {
-			inPGP = true
-			pgp = append(pgp, line)
-			continue
-		}
-		
-		if inPGP {
-			pgp = append(pgp, line)
-			if strings.Contains(line, "-----END PGP MESSAGE-----") {
-				break
-			}
-		}
-	}
-	
-	if !inPGP {
-		return ""
-	}
-	
-	return strings.Join(pgp, "\n")
-}
-
-func decryptWithGPG(encrypted string) (string, error) {
-	cmd := exec.Command("gpg", "--decrypt", "--batch", "--quiet", 
-		"--pinentry-mode", "loopback", "--passphrase-fd", "0")
-	
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", fmt.Errorf("error creating stdin pipe: %v", err)
-	}
-	
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("error starting gpg: %v", err)
-	}
-	
-	stdin.Write([]byte(pgpPassphrase + "\n"))
-	stdin.Write([]byte(encrypted))
-	stdin.Close()
-	
-	err = cmd.Wait()
-	if err != nil {
-		return "", fmt.Errorf("gpg decryption failed: %v\nstderr: %s", err, stderr.String())
-	}
-	
-	if stderr.Len() > 0 {
-		fmt.Fprintf(os.Stderr, "GPG stderr: %s\n", stderr.String())
-	}
-	
-	return stdout.String(), nil
+	return sendRawArticle(article)
 }
 
 func sendRawArticle(rawArticle string) error {
@@ -186,11 +113,13 @@ func sendRawArticle(rawArticle string) error {
 
 	bufReader := bufio.NewReader(conn)
 
+	// Read greeting
 	_, err = bufReader.ReadString('\n')
 	if err != nil {
 		return fmt.Errorf("error reading server greeting: %v", err)
 	}
 
+	// Send POST
 	fmt.Fprint(conn, "POST\r\n")
 	response, err := bufReader.ReadString('\n')
 	if err != nil {
@@ -198,15 +127,17 @@ func sendRawArticle(rawArticle string) error {
 	}
 
 	if strings.HasPrefix(response, "340") {
+		// Send article
 		fmt.Fprint(conn, rawArticle)
 		
 		if !strings.HasSuffix(rawArticle, "\r\n") {
 			fmt.Fprint(conn, "\r\n")
 		}
 		
-
+		// Send end marker
 		fmt.Fprint(conn, ".\r\n")
 		
+		// Read response
 		response, err = bufReader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("error reading server response: %v", err)
@@ -221,6 +152,7 @@ func sendRawArticle(rawArticle string) error {
 		return fmt.Errorf("server did not accept POST command: %s", response)
 	}
 
+	// QUIT
 	fmt.Fprint(conn, "QUIT\r\n")
 	return nil
 }
